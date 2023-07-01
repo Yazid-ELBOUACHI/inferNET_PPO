@@ -7,7 +7,7 @@ from stable_baselines3 import PPO
 
 # Define the InferNet model architecture
 infernet_model = keras.Sequential([
-    layers.TimeDistributed(layers.Dense(256, activation='relu'), input_shape=(None, 4)),
+    layers.TimeDistributed(layers.Dense(256, activation='relu'), input_shape=(None, 1)),
     layers.TimeDistributed(layers.Dense(256, activation='relu')),
     layers.TimeDistributed(layers.Dense(256, activation='relu')),
     layers.TimeDistributed(layers.Dense(1))  # Output a scalar reward
@@ -63,7 +63,9 @@ for episode in range(K):
     batch = [D[idx] for idx in batch_indices]
 
     # Train InferNet on the mini-batch
+    print("=====================================")
     states_batch = np.concatenate([data[0] for data in batch])
+    print(states_batch.shape)
     actions_batch = np.concatenate([data[1] for data in batch])
     rewards_batch = np.concatenate([data[2] for data in batch])
     Rdel_batch = np.array([data[3] for data in batch])
