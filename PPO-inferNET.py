@@ -63,9 +63,7 @@ for episode in range(K):
     batch = [D[idx] for idx in batch_indices]
 
     # Train InferNet on the mini-batch
-    print("=====================================")
     states_batch = np.concatenate([data[0] for data in batch])
-    print(states_batch.shape)
     actions_batch = np.concatenate([data[1] for data in batch])
     rewards_batch = np.concatenate([data[2] for data in batch])
     Rdel_batch = np.array([data[3] for data in batch])
