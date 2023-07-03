@@ -2,35 +2,35 @@ import tensorflow as tf
 from tensorflow import keras
 from keras import layers
 import numpy as np
-from rlenv.envs.wall.core import AccentaEnv
 from stable_baselines3 import PPO
+from rlenv.envs.wall.core import AccentaEnv
 
 # Define the InferNet model architecture
 infernet_model = keras.Sequential([
-    layers.TimeDistributed(layers.Dense(256, activation='relu'), input_shape=(None, 1)),
-    layers.TimeDistributed(layers.Dense(256, activation='relu')),
-    layers.TimeDistributed(layers.Dense(256, activation='relu')),
-    layers.TimeDistributed(layers.Dense(1))  # Output a scalar reward
+    layers.Dense(256, activation='relu', input_shape=(None, 14)),  # state+action has 14 features
+    layers.Dense(256, activation='relu'),
+    layers.Dense(1)  # Output a scalar reward
 ])
 
 # Define the PPO agent model architecture
 ppo_model = keras.Sequential([
-    layers.Dense(64, activation='relu', input_shape=(4,)),
+    layers.Dense(64, activation='relu', input_shape=(None,14)),
     layers.Dense(64, activation='relu'),
-    layers.Dense(2)  # Output action probabilities for 2 actions
+    layers.Dense(3)
 ])
 
 # Initialize InferNet buffer D
 D = []
 
 # Hyperparameters
-K = 100  # Number of pretraining episodes
-M = 200  # Number of training episodes
-batch_size = 32
-gamma = 0.99  # Discount factor
+K = 100000 # Number of pretraining episodes
+M = 100000
+batch_size = 128
 
 # Pretrain InferNet
 for episode in range(K):
+    print("episode = ", episode)
+    optimizer = tf.keras.optimizers.Adam()
     # Play an episode randomly and collect the data
     env = AccentaEnv()
     states = []
@@ -63,16 +63,25 @@ for episode in range(K):
     batch = [D[idx] for idx in batch_indices]
 
     # Train InferNet on the mini-batch
-    states_batch = np.concatenate([data[0] for data in batch])
-    actions_batch = np.concatenate([data[1] for data in batch])
-    rewards_batch = np.concatenate([data[2] for data in batch])
-    Rdel_batch = np.array([data[3] for data in batch])
+    optimizer = tf.keras.optimizers.Adam()  # Initialize the Adam optimizer
+
     with tf.GradientTape() as tape:
-        infer_rewards = infernet_model(states_batch, training=True)
-        infer_rewards = tf.reshape(infer_rewards, [-1])  # Reshape to remove sequence dimension
-        loss = tf.reduce_mean(tf.square(Rdel_batch - infer_rewards))
+        states_batch = np.concatenate([data[0] for data in batch])
+        actions_batch = np.concatenate([data[1] for data in batch])
+        rewards_batch = np.concatenate([data[2] for data in batch])
+        Rdel_batch = np.array([data[3] for data in batch])
+        Rdel_batch = tf.cast(Rdel_batch, dtype=tf.float32)
+        Rdel_batch = tf.expand_dims(Rdel_batch, axis=-1)
+        states_with_actions = np.concatenate([states_batch, actions_batch], axis=-1)
+        infer_rewards = infernet_model(states_with_actions, training=True)
+        infer_sum_rewards = tf.reduce_sum(infer_rewards, axis=1)
+        infer_sum_rewards = tf.cast(infer_sum_rewards, dtype=tf.float32)
+
+        loss = tf.reduce_mean(tf.square(Rdel_batch - infer_sum_rewards))
+        print("loss =", loss)
+
     gradients = tape.gradient(loss, infernet_model.trainable_variables)
-    infernet_model.optimizer.apply_gradients(zip(gradients, infernet_model.trainable_variables))
+    optimizer.apply_gradients(zip(gradients, infernet_model.trainable_variables))
 
 # Train PPO RL agent using InferNet
 model = PPO(ppo_model, verbose=1)  # Create PPO agent with ppo_model as the policy network
@@ -98,20 +107,22 @@ for episode in range(M):
         tmp.append((state, action, reward, next_state))
 
         # Train PPO RL agent
-        model.learn(total_timesteps=1000000)
+        model.learn(total_timesteps=M)
 
         state = next_state
 
-    # Reshape tmp sequence for TimeDistributed input
+    # Reshape tmp sequence
     states_tmp = np.expand_dims(np.array([data[0] for data in tmp]), axis=0)
+    actions_tmp = np.array([data[1] for data in tmp])
+    states_with_actions_tmp = np.concatenate([states_tmp, actions_tmp], axis=-1)
 
     # Use InferNet to infer rewards for the steps in tmp
-    infer_rewards = infernet_model(states_tmp, training=False)
-    infer_rewards = tf.reshape(infer_rewards, [-1])  # Reshape to remove sequence dimension
+    infer_rewards = infernet_model(states_with_actions_tmp, training=False)
+    infer_sum_rewards = tf.reduce_sum(infer_rewards, axis=1)
 
     # Replace rewards in tmp with InferNet rewards
     for i in range(len(tmp)):
-        tmp[i] = (tmp[i][0], tmp[i][1], infer_rewards[i].numpy(), tmp[i][3])
+        tmp[i] = (tmp[i][0], tmp[i][1], infer_sum_rewards[i].numpy(), tmp[i][3])
 
     # Add tmp sequence to buffer D
     D.extend(tmp)
@@ -132,9 +143,10 @@ if len(D) >= batch_size:
     actions_batch = np.array([data[1] for data in batch])
     rewards_batch = np.array([data[2] for data in batch])
     next_states_batch = np.array([data[3] for data in batch])
+    states_with_actions_batch = np.concatenate([states_batch, actions_batch], axis=-1)
 
     # Train the PPO RL agent on the mini-batch
-    model.learn(total_timesteps=1000000, states_batch=states_batch, actions_batch=actions_batch, rewards_batch=rewards_batch, next_states_batch=next_states_batch)
+    model.learn(total_timesteps=1000000, states_batch=states_with_actions_batch, rewards_batch=rewards_batch, next_states_batch=next_states_batch)
 
 # Evaluate the trained model
 score = AccentaEnv.eval(model)
