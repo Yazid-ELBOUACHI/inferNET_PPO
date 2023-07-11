@@ -7,9 +7,10 @@ from rlenv.envs.wall.core import AccentaEnv
 
 # Define the InferNet model architecture
 infernet_model = keras.Sequential([
-    layers.Dense(256, activation='relu', input_shape=(None, 14)),  # state+action has 14 features
-    layers.Dense(256, activation='relu'),
-    layers.Dense(1)  # Output a scalar reward
+    layers.Dense(256, activation=keras.layers.LeakyReLU(alpha=0.2), input_shape=(None, 14)),
+    layers.Dense(256, activation=keras.layers.LeakyReLU(alpha=0.2)),
+    layers.Dense(256, activation=keras.layers.LeakyReLU(alpha=0.2)),
+    layers.Dense(1)
 ])
 
 # Define the PPO agent model architecture
@@ -26,13 +27,14 @@ D = []
 K = 100000 # Number of pretraining episodes
 M = 100000
 batch_size = 128
+optimizer = tf.keras.optimizers.Adam()  # Initialize the Adam optimizer
+env = AccentaEnv()
 
 # Pretrain InferNet
 for episode in range(K):
-    print("episode = ", episode)
-    optimizer = tf.keras.optimizers.Adam()
+    print("=================================================================================================")
+    print("episode number ", episode)
     # Play an episode randomly and collect the data
-    env = AccentaEnv()
     states = []
     actions = []
     rewards = []
@@ -106,10 +108,32 @@ for episode in range(M):
         # Add data to tmp sequence
         tmp.append((state, action, reward, next_state))
 
-        # Train PPO RL agent
-        model.learn(total_timesteps=M)
-
         state = next_state
+
+    # Train InferNet on the collected episode data
+    episode_states = np.array([data[0] for data in tmp])
+    episode_actions = np.array([data[1] for data in tmp])
+    episode_states_with_actions = np.concatenate([episode_states, episode_actions], axis=-1)
+
+    with tf.GradientTape() as tape:
+        episode_infer_rewards = infernet_model(episode_states_with_actions, training=True)
+        episode_infer_sum_rewards = tf.reduce_sum(episode_infer_rewards, axis=1)
+        episode_infer_sum_rewards = tf.cast(episode_infer_sum_rewards, dtype=tf.float32)
+
+        episode_loss = -tf.reduce_mean(episode_infer_sum_rewards)  # Maximize the inferred rewards
+
+    episode_gradients = tape.gradient(episode_loss, infernet_model.trainable_variables)
+    optimizer.apply_gradients(zip(episode_gradients, infernet_model.trainable_variables))
+
+    # Infer immediate rewards using InferNet and store them in the tmp buffer
+    tmp_infer_rewards = infernet_model(episode_states_with_actions, training=False)
+    tmp = [(data[0], data[1], tmp_infer_rewards[i].numpy(), data[3]) for i, data in enumerate(tmp)]
+
+    # Add tmp sequence to buffer D
+    D.extend(tmp)
+
+    # Train PPO RL agent
+    model.learn(total_timesteps=M, reset_num_timesteps=False, log_interval=10)
 
     # Reshape tmp sequence
     states_tmp = np.expand_dims(np.array([data[0] for data in tmp]), axis=0)
@@ -118,11 +142,10 @@ for episode in range(M):
 
     # Use InferNet to infer rewards for the steps in tmp
     infer_rewards = infernet_model(states_with_actions_tmp, training=False)
-    infer_sum_rewards = tf.reduce_sum(infer_rewards, axis=1)
 
     # Replace rewards in tmp with InferNet rewards
     for i in range(len(tmp)):
-        tmp[i] = (tmp[i][0], tmp[i][1], infer_sum_rewards[i].numpy(), tmp[i][3])
+        tmp[i] = (tmp[i][0], tmp[i][1], infer_rewards[i].numpy(), tmp[i][3])
 
     # Add tmp sequence to buffer D
     D.extend(tmp)
