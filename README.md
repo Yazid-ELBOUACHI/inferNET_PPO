@@ -14,7 +14,6 @@ This repository contains code for training a Reinforcement Learning (RL) agent u
 
 ```bash
 git clone https://github.com/Yazid-ELBOUAVHI/inferNET_PPO.git
-cd your-repo
 ```
 
 2. Install the required dependencies:
